@@ -1,8 +1,9 @@
 /**
  * dataService.js
  * Núcleo da lógica de negócio do projeto.
- * - Orquestra o download e parsing das 3 planilhas.
+ * - Orquestra o download e parsing das 4 planilhas (incluindo ignorados).
  * - Aplica a regra de custo (MAIOR entre preço de tabela e custo draft, ou apenas draft se tabela não existir).
+ * - Exclui todos os SKUs da planilha de ignorados de TODOS os cálculos, KPIs, gráficos e tabelas.
  * - Calcula todos os KPIs financeiros e de estoque.
  * - Estrutura os dados para consumo pelo frontend e aplicação de filtros (PDV/Marca).
  */
@@ -12,6 +13,7 @@ const { SHEET_NAMES } = require('../config/constants');
 const { downloadMainSpreadsheet } = require('./downloadService');
 const { processDraftCosts } = require('./draftService');
 const { processSafetyStock } = require('./safetyStockService');
+const { processIgnoredItems } = require('./ignoredService');
 const { getBrasiliaTime, getCurrentTimestampMs } = require('./timeService');
 
 /**
@@ -36,6 +38,17 @@ function toFloat(val) {
 }
 
 /**
+ * Normaliza um EAN/SKU para comparação consistente.
+ * Remove espaços, hífens e pontos (mesma lógica do ignoredService).
+ * @param {string} ean - EAN bruto.
+ * @returns {string} - EAN normalizado.
+ */
+function normalizeEAN(ean) {
+    if (!ean) return '';
+    return String(ean).replace(/[\s\-\.]/g, '').trim();
+}
+
+/**
  * Processa a planilha principal (abas BOTICARIO, EUDORA, QUEM_DISSE_BERENICE).
  */
 async function parseMainSpreadsheet(buffer) {
@@ -56,7 +69,8 @@ async function parseMainSpreadsheet(buffer) {
         const marca = brandMap[sheetName];
 
         for (const row of rawData) {
-            const ean = String(row[findKey(row, ['EAN', 'CÓDIGO', 'CODIGO', 'SKU', 'CÓD. EAN'])] || '').trim();
+            const eanRaw = String(row[findKey(row, ['EAN', 'CÓDIGO', 'CODIGO', 'SKU', 'CÓD. EAN'])] || '').trim();
+            const ean = normalizeEAN(eanRaw);
             if (!ean) continue;
 
             const qtdEstoque = toFloat(row[findKey(row, ['QTD', 'ESTOQUE', 'QUANTIDADE', 'QTD ESTOQUE', 'SALDO'])]);
@@ -74,28 +88,50 @@ async function parseMainSpreadsheet(buffer) {
 
 /**
  * Orquestrador principal. Baixa, cruza dados, aplica regras e calcula KPIs.
+ * Exclui todos os SKUs da planilha de ignorados antes de qualquer cálculo.
  */
 async function processAllData() {
     console.log('[dataService] 🔄 Iniciando processamento completo dos dados...');
     const startMs = getCurrentTimestampMs();
 
-    // 1. Downloads e parsing em paralelo (independentes)
-    const [mainBuffer, draftCosts, safetyStockMap] = await Promise.all([
+    // 1. Downloads e parsing em paralelo (todas as 4 planilhas são independentes)
+    const [mainBuffer, draftCosts, safetyStockMap, ignoredEANs] = await Promise.all([
         downloadMainSpreadsheet(),
         processDraftCosts(),
-        processSafetyStock()
+        processSafetyStock(),
+        processIgnoredItems()
     ]);
 
-    // 2. Parse planilha principal
-    const mainItems = await parseMainSpreadsheet(mainBuffer);
+    console.log(`[dataService] Planilha de ignorados carregada: ${ignoredEANs.size} SKUs serão excluídos.`);
 
-    // 3. Indexa custos draft por EAN (primeiro valor encontrado por EAN)
-    const draftByEAN = {};
-    for (const dc of draftCosts) {
-        if (!draftByEAN[dc.ean]) draftByEAN[dc.ean] = dc.custo;
+    // 2. Parse planilha principal
+    const allMainItems = await parseMainSpreadsheet(mainBuffer);
+    console.log(`[dataService] Planilha principal parseada: ${allMainItems.length} itens totais.`);
+
+    // 3. 🔥 FILTRO DE IGNORADOS: Remove todos os SKUs que estão na planilha de ignorados
+    // Estes itens (geralmente sacolas) não fazem sentido para as análises
+    const mainItems = allMainItems.filter(item => {
+        const isIgnored = ignoredEANs.has(item.ean);
+        if (isIgnored) {
+            // Log opcional para debug (descomente se quiser ver quais itens foram ignorados)
+            // console.log(`[dataService] Item ignorado (sacola/etc): EAN=${item.ean}, Produto=${item.produto}`);
+        }
+        return !isIgnored;
+    });
+
+    const ignoredCount = allMainItems.length - mainItems.length;
+    if (ignoredCount > 0) {
+        console.log(`[dataService] ⚠️ ${ignoredCount} itens foram excluídos por estarem na planilha de ignorados.`);
     }
 
-    // 4. Aplica regra de negócio e calcula KPIs por item
+    // 4. Indexa custos draft por EAN (primeiro valor encontrado por EAN)
+    const draftByEAN = {};
+    for (const dc of draftCosts) {
+        const normalizedEan = normalizeEAN(dc.ean);
+        if (!draftByEAN[normalizedEan]) draftByEAN[normalizedEan] = dc.custo;
+    }
+
+    // 5. Aplica regra de negócio e calcula KPIs por item
     const processedItems = [];
     for (const item of mainItems) {
         const custoDraft = draftByEAN[item.ean] || 0;
@@ -137,7 +173,7 @@ async function processAllData() {
         });
     }
 
-    // 5. Consolida KPIs totais e agrupa por dimensões (Marca, Curva, Categoria)
+    // 6. Consolida KPIs totais e agrupa por dimensões (Marca, Curva, Categoria)
     const consolidatedKPIs = {
         Valor_Estoque_Atual: 0,
         Valor_Estoque_Minimo: 0,
@@ -199,7 +235,7 @@ async function processAllData() {
     const endMs = getCurrentTimestampMs();
     const processingTime = ((endMs - startMs) / 1000).toFixed(2);
 
-    console.log(`[dataService] ✅ Processamento concluído em ${processingTime}s. ${processedItems.length} itens processados.`);
+    console.log(`[dataService] ✅ Processamento concluído em ${processingTime}s. ${processedItems.length} itens processados (${ignoredCount} ignorados).`);
 
     return {
         timestamp: getBrasiliaTime(),
@@ -209,7 +245,8 @@ async function processAllData() {
         byCategory,
         excessosCriticos: excessosCriticos.slice(0, 100),
         faltasPorMarca,
-        allItems: processedItems, // Mantido para filtros dinâmicos no frontend
+        allItems: processedItems, // Mantido para filtros dinâmicos no frontend (já sem os ignorados)
+        ignoredCount: ignoredCount, // Informação para o frontend saber quantos itens foram excluídos
         processingTime
     };
 }
