@@ -5,7 +5,7 @@
  * - Realiza requisições fetch para a API (GET /data, POST /refresh).
  * - Aplica filtros de PDV e Marca nos dados brutos.
  * - Atualiza os KPIs, gráficos e tabelas dinamicamente.
- * - Controla o overlay de carregamento e o botão de atualização.
+ * - Controla o overlay de carregamento, o botão de atualização e o badge de itens ignorados.
  */
 
 // ============================================================================
@@ -24,6 +24,10 @@ const DOM = {
     filterPdv: document.getElementById('filter-pdv'),
     filterBrand: document.getElementById('filter-brand'),
     btnApplyFilters: document.getElementById('btn-apply-filters'),
+    
+    // Badge de itens ignorados
+    ignoredBadge: document.getElementById('ignored-badge'),
+    ignoredCount: document.getElementById('ignored-count'),
     
     // KPIs
     kpiValorEstoque: document.getElementById('kpi-valor-estoque'),
@@ -70,6 +74,22 @@ function setLoading(isLoading) {
     }
 }
 
+/**
+ * Atualiza o badge de itens ignorados no header.
+ * Exibe o badge apenas se houver itens ignorados (> 0).
+ * @param {number} count - Quantidade de itens ignorados.
+ */
+function updateIgnoredBadge(count) {
+    if (!DOM.ignoredBadge || !DOM.ignoredCount) return;
+    
+    if (count && count > 0) {
+        DOM.ignoredCount.textContent = formatNumber(count);
+        DOM.ignoredBadge.classList.remove('hidden');
+    } else {
+        DOM.ignoredBadge.classList.add('hidden');
+    }
+}
+
 // ============================================================================
 // REQUISIÇÕES À API
 // ============================================================================
@@ -103,6 +123,9 @@ async function fetchData(forceRefresh = false) {
             
             // Atualiza o timestamp no header
             DOM.lastUpdate.textContent = `Última atualização: ${globalData.timestamp}`;
+            
+            // 🔥 Atualiza o badge de itens ignorados
+            updateIgnoredBadge(globalData.ignoredCount);
             
             // Aplica filtros iniciais (ou recalcula se for refresh)
             applyFilters();
