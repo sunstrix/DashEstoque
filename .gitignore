@@ -1,1 +1,64 @@
+# Diretórios e arquivos do Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnp/
+.pnp.cjs
+.pnp.loader.mjs
+*.tgz
+
+# Arquivos de log
+*.log
 instalar.log
+executar.log
+
+# Arquivos temporários do editor
+.vscode/
+.idea/
+*.swp
+*.swn
+*.un~
+*.sublime-workspace
+*.sublime-project
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Arquivos de ambiente
+.env
+.env.local
+.env.*.local
+
+# Arquivos de build
+dist/
+build/
+public/js/bundle.js
+public/js/chunks/
+public/css/bundle.css
+public/js/*.map
+public/css/*.map
+
+# Arquivos temporários do Windows
+$RECYCLE.BIN/
+System Volume Information/
+
+# Arquivos de cache
+/.cache/
+/.next/
+/.nuxt/
+/.vercel/
+
+# Arquivos de teste
+__tests__/
+test/
+tests/
+*.test.js
+*.spec.js
+
+# Arquivos de documentação gerados
+docs/
+coverage/
