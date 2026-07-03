@@ -150,12 +150,27 @@ async function downloadMainSpreadsheet() {
 
 /**
  * Baixa a planilha de estoque de segurança.
+ * CORREÇÃO: nome principal é downloadSafetySpreadsheet (esperado por safetyStockService.js).
+ * Mantém alias downloadSafetyStockSpreadsheet para compatibilidade com referências antigas.
+ *
  * @returns {Promise<Buffer>} Buffer do arquivo Excel
  */
-async function downloadSafetyStockSpreadsheet() {
+async function downloadSafetySpreadsheet() {
     const url = process.env.SPREADSHEET_SAFETY_STOCK_URL;
     console.log('[downloadService] 🛡️ Iniciando download da planilha ESTOQUE SEGURANÇA...');
     return downloadWithRetry(url);
+}
+
+/**
+ * Alias de compatibilidade: mantém o nome antigo downloadSafetyStockSpreadsheet
+ * apontando para downloadSafetySpreadsheet, caso alguma referência esquecida
+ * em outro arquivo ainda esteja usando o nome anterior.
+ *
+ * @returns {Promise<Buffer>} Buffer do arquivo Excel
+ */
+async function downloadSafetyStockSpreadsheet() {
+    console.warn('[downloadService] ⚠️ downloadSafetyStockSpreadsheet está depreciado. Use downloadSafetySpreadsheet.');
+    return downloadSafetySpreadsheet();
 }
 
 /**
@@ -195,9 +210,10 @@ async function downloadCostSpreadsheet() {
 
 module.exports = {
     downloadMainSpreadsheet,
-    downloadSafetyStockSpreadsheet,
-    downloadDraftSpreadsheet,       // ✅ Nome correto esperado por draftService.js
-    downloadCostSpreadsheet,        // 🔒 Alias de compatibilidade (regra crítica: não remover)
+    downloadSafetySpreadsheet,        // ✅ Nome correto esperado por safetyStockService.js
+    downloadSafetyStockSpreadsheet,   // 🔒 Alias de compatibilidade (regra crítica: não remover)
+    downloadDraftSpreadsheet,         // ✅ Nome correto esperado por draftService.js
+    downloadCostSpreadsheet,          // 🔒 Alias de compatibilidade (regra crítica: não remover)
     downloadIgnoredItemsSpreadsheet,
     downloadWithRetry,
     extrairUrlDownloadSharepoint
