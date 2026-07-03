@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DashEstoque - Dashboard de Estoque CPFANI</title>
+    
+    <!-- Estilos -->
+    <link rel="stylesheet" href="css/style.css">
+    
+    <!-- Chart.js via CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+    <!-- Overlay de Carregamento -->
+    <div id="loading-overlay" class="loading-overlay hidden">
+        <div class="spinner"></div>
+        <p>Processando dados do estoque...</p>
+    </div>
+
+    <!-- Cabeçalho -->
+    <header class="main-header">
+        <div class="header-left">
+            <!-- Placeholder para logo (substitua o src pelo caminho real da sua logo) -->
+            <img src="https://via.placeholder.com/40x40/007A33/ffffff?text=CPF" alt="Logo CPFANI" class="logo">
+            <h1>DashEstoque <span class="subtitle">CPFANI</span></h1>
+        </div>
+        <div class="header-right">
+            <span id="last-update" class="timestamp">Última atualização: --/--/---- --:--:--</span>
+            <button id="btn-refresh" class="btn-refresh" title="Forçar Atualização">
+                🔄 Atualizar
+            </button>
+        </div>
+    </header>
+
+    <!-- Container Principal -->
+    <div class="container">
+        
+        <!-- Sidebar de Filtros -->
+        <aside class="sidebar">
+            <h2>Filtros</h2>
+            
+            <div class="filter-group">
+                <label for="filter-pdv">PDV (Ponto de Venda)</label>
+                <select id="filter-pdv" class="filter-select">
+                    <option value="ALL">Todos os PDVs</option>
+                    <!-- Opções de PDV serão populadas via JS -->
+                </select>
+            </div>
+
+            <div class="filter-group">
+                <label for="filter-brand">Marca</label>
+                <select id="filter-brand" class="filter-select">
+                    <option value="ALL">Todas as Marcas</option>
+                    <option value="O Boticário">O Boticário</option>
+                    <option value="Eudora">Eudora</option>
+                    <option value="Quem Disse Berenice?">Quem Disse Berenice?</option>
+                </select>
+            </div>
+
+            <button id="btn-apply-filters" class="btn-apply">Aplicar Filtros</button>
+        </aside>
+
+        <!-- Área de Conteúdo -->
+        <main class="content">
+            
+            <!-- KPIs Consolidados -->
+            <section class="kpis-grid">
+                <div class="kpi-card kpi-green">
+                    <h3>Valor Estoque Atual</h3>
+                    <p id="kpi-valor-estoque" class="kpi-value">R$ 0,00</p>
+                </div>
+                <div class="kpi-card kpi-gold">
+                    <h3>Valor Estoque Mínimo</h3>
+                    <p id="kpi-valor-minimo" class="kpi-value">R$ 0,00</p>
+                </div>
+                <div class="kpi-card kpi-purple">
+                    <h3>Valor Excesso</h3>
+                    <p id="kpi-valor-excesso" class="kpi-value">R$ 0,00</p>
+                </div>
+                <div class="kpi-card kpi-red">
+                    <h3>Valor Falta</h3>
+                    <p id="kpi-valor-falta" class="kpi-value">R$ 0,00</p>
+                </div>
+            </section>
+
+            <!-- Gráficos -->
+            <section class="charts-grid">
+                <div class="chart-container">
+                    <h3>Comparativo por Marca</h3>
+                    <canvas id="chart-brands"></canvas>
+                </div>
+                <div class="chart-container">
+                    <h3>Custo por Curva (A/B/C/E)</h3>
+                    <canvas id="chart-curve"></canvas>
+                </div>
+                <div class="chart-container full-width">
+                    <h3>Estoque por Categoria</h3>
+                    <canvas id="chart-category"></canvas>
+                </div>
+            </section>
+
+            <!-- Tabelas de Análise -->
+            <section class="tables-grid">
+                <div class="table-container">
+                    <h3>Excessos Críticos (Top 100)</h3>
+                    <div class="table-wrapper">
+                        <table id="table-excessos">
+                            <thead>
+                                <tr>
+                                    <th>Produto</th>
+                                    <th>Marca</th>
+                                    <th>Qtd Excesso</th>
+                                    <th>Valor Excesso</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <!-- Dados populados via JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="table-container">
+                    <h3>Faltas por Marca</h3>
+                    <div class="table-wrapper">
+                        <table id="table-faltas">
+                            <thead>
+                                <tr>
+                                    <th>Marca</th>
+                                    <th>Qtd Total Falta</th>
+                                    <th>Valor Total Falta</th>
+                                    <th>Itens Faltantes</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <!-- Dados populados via JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+        </main>
+    </div>
+
+    <!-- Scripts do Frontend -->
+    <script src="js/app.js"></script>
+    <script src="js/charts.js"></script>
+    <script src="js/tables.js"></script>
+</body>
+</html>
