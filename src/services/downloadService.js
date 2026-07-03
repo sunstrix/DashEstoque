@@ -1,9 +1,14 @@
 /**
  * downloadService.js
- * Responsável por baixar as planilhas do Google Sheets OU SharePoint com retry automático.
- * - Detecta automaticamente se a URL é do SharePoint e aplica headers/configurações específicas.
- * - Utiliza axios para as requisições HTTP e retorna os dados como Buffer
- *   para que os outros services possam fazer o parsing com a biblioteca xlsx.
+ * Responsável por baixar as planilhas do SharePoint ou Google Sheets.
+ * 
+ * LÓGICA DE DOWNLOAD DO SHAREPOINT (replicada do projeto VencimentosCPFANI):
+ * - Apenas adiciona o parâmetro ?download=1 à URL original do SharePoint
+ * - Usa headers específicos de navegador com Accept para Excel
+ * - Permite redirects automáticos (SharePoint faz redirect antes de retornar o arquivo)
+ * - Valida o Content-Type para garantir que não é uma página HTML de login
+ * 
+ * Para Google Sheets, usa o formato padrão de exportação.
  */
 
 const axios = require('axios');
@@ -16,100 +21,129 @@ const { SPREADSHEET_URLS, RETRY_CONFIG } = require('../config/constants');
  */
 function isSharepointUrl(url) {
     if (!url) return false;
-    const lower = url.toLowerCase();
+    const lower = String(url).toLowerCase();
     return (
         lower.includes('.sharepoint.com/') ||
         lower.includes('-my.sharepoint.com/') ||
-        lower.includes('1drv.ms/') || // OneDrive pessoal compartilhado
+        lower.includes('1drv.ms/') ||
         lower.includes('onedrive.live.com/')
     );
 }
 
 /**
- * Garante que a URL do SharePoint tenha o parâmetro ?download=1 para forçar o download direto.
- * @param {string} url - URL original.
- * @returns {string} - URL com ?download=1 adicionado (se aplicável).
+ * Adiciona o parâmetro download=1 à URL do SharePoint.
+ * REPLICADO DA LÓGICA DO PROJETO VencimentosCPFANI (função extrair_info_sharepoint).
+ * 
+ * Preserva todos os parâmetros originais da URL (como e=, etc).
+ * 
+ * @param {string} url - URL original do SharePoint.
+ * @returns {string} - URL com parâmetro download=1 adicionado.
  */
-function ensureSharepointDownloadParam(url) {
-    if (!isSharepointUrl(url)) return url;
+function adicionarDownloadParam(url) {
+    if (!url) return url;
     
-    // Se já tem o parâmetro download, retorna como está
-    if (url.includes('download=1')) return url;
+    // Se já tem download=1 ou é URL de download direto, retorna como está
+    if (url.includes('download=1') || url.includes('download.aspx')) {
+        return url;
+    }
     
-    // Adiciona ?download=1 (ou &download=1 se já houver query string)
-    const separator = url.includes('?') ? '&' : '?';
-    return `${url}${separator}download=1`;
+    try {
+        // Usa a API URL nativa do Node.js (equivalente a urlparse do Python)
+        const parsed = new URL(url);
+        
+        // Adiciona o parâmetro download=1 preservando os existentes
+        parsed.searchParams.set('download', '1');
+        
+        return parsed.toString();
+    } catch (error) {
+        console.warn(`[downloadService] Erro ao adicionar download=1: ${error.message}`);
+        return url;
+    }
 }
 
 /**
  * Realiza o download de uma URL com retry automático em caso de falha.
- * Suporta Google Sheets e SharePoint (com redirects e User-Agent de navegador).
+ * 
  * @param {string} url - URL pública da planilha.
- * @returns {Promise<Buffer>} - Buffer contendo os dados da planilha.
+ * @returns {Promise<Buffer>} - Buffer contendo os dados da planilha Excel.
  */
 async function downloadWithRetry(url) {
-    let lastError;
+    // Validação inicial: URL não pode ser undefined/null/vazia
+    if (!url || url === 'undefined' || url.trim() === '') {
+        throw new Error('[downloadService] URL inválida ou não configurada. Verifique o arquivo .env');
+    }
     
-    // Pré-processa a URL se for SharePoint
-    const finalUrl = ensureSharepointDownloadParam(url);
+    // Verifica se é URL placeholder (não configurada)
+    if (url.includes('SEU_ID_AQUI') || url.includes('COLE_AQUI_A_URL')) {
+        throw new Error(`[downloadService] URL ainda é um placeholder: ${url}. Configure a URL real no arquivo .env`);
+    }
+    
+    let lastError;
     const isSharepoint = isSharepointUrl(url);
     
+    // Pré-processa a URL: adiciona download=1 se for SharePoint
+    const finalUrl = isSharepoint ? adicionarDownloadParam(url) : url;
+    
+    console.log(`[downloadService] Tipo: ${isSharepoint ? 'SharePoint' : 'Google Sheets/Outro'}`);
+    console.log(`[downloadService] URL original: ${url}`);
     if (isSharepoint) {
-        console.log(`[downloadService] URL do SharePoint detectada. Download direto habilitado.`);
+        console.log(`[downloadService] URL com download=1: ${finalUrl}`);
     }
     
     for (let attempt = 1; attempt <= RETRY_CONFIG.MAX_RETRIES; attempt++) {
         try {
             console.log(`[downloadService] Tentativa ${attempt}/${RETRY_CONFIG.MAX_RETRIES} de download...`);
             
-            // Configuração específica para SharePoint (User-Agent de navegador + redirects)
+            // Headers REPLICADOS DO VencimentosCPFANI: simula navegador real
+            const headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,application/octet-stream,*/*;q=0.8',
+                'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Accept-Encoding': 'gzip, deflate, br'
+            };
+            
             const axiosConfig = {
                 responseType: 'arraybuffer',
                 timeout: RETRY_CONFIG.TIMEOUT_MS,
-                maxRedirects: 10, // SharePoint pode fazer vários redirects
-                validateStatus: function (status) {
-                    return status >= 200 && status < 400; // Aceita 2xx e 3xx (redirects)
-                }
+                maxRedirects: 15, // SharePoint faz múltiplos redirects
+                headers: headers,
+                // NÃO rejeita redirects (3xx) - o axios os segue automaticamente
+                // e o validateStatus padrão (200-299) se aplica à resposta FINAL após o redirect
+                decompress: true
             };
-
-            // SharePoint exige User-Agent de navegador para liberar o download
-            if (isSharepoint) {
-                axiosConfig.headers = {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7'
-                };
-            } else {
-                // Google Sheets
-                axiosConfig.headers = {
-                    'User-Agent': 'DashEstoque-NodeJS/1.0'
-                };
-            }
             
             const response = await axios.get(finalUrl, axiosConfig);
             
-            // Verifica se o conteúdo retornado é realmente um Excel
-            const contentType = response.headers['content-type'] || '';
-            const isExcel = (
-                contentType.includes('spreadsheet') ||
-                contentType.includes('excel') ||
-                contentType.includes('octet-stream') ||
-                contentType.includes('openxmlformats')
-            );
+            // Verifica o Content-Type da resposta final (após os redirects)
+            const contentType = (response.headers['content-type'] || '').toLowerCase();
             
-            // Para SharePoint, o content-type pode vir como text/html em alguns casos de erro
-            if (isSharepoint && contentType.includes('text/html')) {
-                throw new Error('SharePoint retornou HTML em vez de arquivo Excel. Verifique se o link está público e com permissão de download.');
+            // REPLICADO DO VencimentosCPFANI: verifica se é HTML (página de login/erro)
+            if (contentType.includes('text/html')) {
+                const errorText = Buffer.from(response.data).toString('utf-8').substring(0, 200);
+                throw new Error(`Resposta HTML recebida (não é arquivo Excel). Possível problema de autenticação. Trecho: ${errorText}`);
             }
             
-            console.log(`[downloadService] Download concluído com sucesso. Content-Type: ${contentType || 'desconhecido'}`);
+            // Validação: arquivo muito pequeno provavelmente é erro
+            if (response.data && response.data.byteLength < 1000) {
+                throw new Error(`Arquivo muito pequeno (${response.data.byteLength} bytes). Provavelmente é uma página de erro.`);
+            }
+            
+            console.log(`[downloadService] ✅ Download concluído com sucesso.`);
+            console.log(`[downloadService]    Content-Type: ${contentType || 'desconhecido'}`);
+            console.log(`[downloadService]    Tamanho: ${(response.data.byteLength / 1024).toFixed(2)} KB`);
+            
             return Buffer.from(response.data);
             
         } catch (error) {
             lastError = error;
-            console.warn(`[downloadService] Falha na tentativa ${attempt}. Erro: ${error.message}`);
             
-            // Se não for a última tentativa, aguarda antes de tentar novamente
+            let errorMessage = error.message;
+            if (error.response) {
+                errorMessage = `HTTP ${error.response.status} - ${error.response.statusText}`;
+            }
+            
+            console.warn(`[downloadService] ❌ Falha na tentativa ${attempt}. Erro: ${errorMessage}`);
+            
             if (attempt < RETRY_CONFIG.MAX_RETRIES) {
                 console.log(`[downloadService] Aguardando ${RETRY_CONFIG.RETRY_DELAY_MS}ms para próxima tentativa...`);
                 await new Promise(resolve => setTimeout(resolve, RETRY_CONFIG.RETRY_DELAY_MS));
@@ -117,7 +151,6 @@ async function downloadWithRetry(url) {
         }
     }
     
-    // Se todas as tentativas falharem, lança um erro
     throw new Error(`[downloadService] Falha ao baixar planilha após ${RETRY_CONFIG.MAX_RETRIES} tentativas. Último erro: ${lastError.message}`);
 }
 
@@ -152,7 +185,7 @@ module.exports = {
     downloadMainSpreadsheet,
     downloadSafetySpreadsheet,
     downloadDraftSpreadsheet,
-    downloadWithRetry, // Exportado para uso pelo ignoredService.js
+    downloadWithRetry,
     isSharepointUrl,
-    ensureSharepointDownloadParam
+    adicionarDownloadParam
 };
