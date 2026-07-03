@@ -27,6 +27,10 @@
             <h1>DashEstoque <span class="subtitle">CPFANI</span></h1>
         </div>
         <div class="header-right">
+            <!-- Badge de itens ignorados (exibido quando houver itens excluídos) -->
+            <span id="ignored-badge" class="ignored-badge hidden" title="Itens excluídos das análises (geralmente sacolas e itens sem relevância)">
+                🚫 <span id="ignored-count">0</span> itens ignorados
+            </span>
             <span id="last-update" class="timestamp">Última atualização: --/--/---- --:--:--</span>
             <button id="btn-refresh" class="btn-refresh" title="Forçar Atualização">
                 🔄 Atualizar
