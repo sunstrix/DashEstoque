@@ -1,7 +1,7 @@
 /**
  * ignoredService.js
  * Responsável por processar a planilha de itens ignorados (IGNORADOS.xlsx).
- * - Baixa a planilha via downloadService.
+ * - Baixa a planilha via downloadService (usando função wrapper downloadIgnoredItemsSpreadsheet).
  * - Extrai todos os EANs/SKUs que devem ser excluídos do dashboard.
  * - Retorna um Set de SKUs ignorados para busca O(1) no dataService.
  * 
@@ -10,8 +10,7 @@
  */
 
 const XLSX = require('xlsx');
-const { SPREADSHEET_URLS } = require('../config/constants');
-const { downloadWithRetry } = require('./downloadService');
+const { downloadIgnoredItemsSpreadsheet } = require('./downloadService');
 
 /**
  * Busca a chave de uma coluna de forma flexível (case-insensitive).
@@ -30,18 +29,21 @@ function findColumnKey(keys, patterns) {
 async function processIgnoredItems() {
     console.log('[ignoredService] Iniciando processamento da planilha de itens ignorados...');
     
-    // 1. Baixa a planilha de ignorados
-    const buffer = await downloadWithRetry(SPREADSHEET_URLS.IGNORED);
+    // CORREÇÃO: usa função wrapper downloadIgnoredItemsSpreadsheet() em vez de
+    // downloadWithRetry(SPREADSHEET_URLS.IGNORED), alinhando com o padrão dos outros services
+    // (draftService.js e safetyStockService.js) e garantindo que a URL seja lida diretamente
+    // de process.env.SPREADSHEET_IGNORED_URL no downloadService.js.
+    const buffer = await downloadIgnoredItemsSpreadsheet();
     
-    // 2. Faz o parsing do buffer para um workbook do Excel
+    // Faz o parsing do buffer para um workbook do Excel
     const workbook = XLSX.read(buffer, { type: 'buffer' });
     
-    // 3. Lê a primeira aba da planilha (ajuste o nome da aba se necessário)
+    // Lê a primeira aba da planilha (ajuste o nome da aba se necessário)
     const firstSheetName = workbook.SheetNames[0];
     console.log(`[ignoredService] Lendo aba: ${firstSheetName}`);
     const sheet = workbook.Sheets[firstSheetName];
     
-    // 4. Converte a aba para um array de objetos (JSON)
+    // Converte a aba para um array de objetos (JSON)
     const jsonData = XLSX.utils.sheet_to_json(sheet, { defval: '' });
     
     if (jsonData.length === 0) {
@@ -49,7 +51,7 @@ async function processIgnoredItems() {
         return new Set();
     }
     
-    // 5. Busca a coluna de EAN/SKU de forma flexível
+    // Busca a coluna de EAN/SKU de forma flexível
     const keys = Object.keys(jsonData[0]);
     const eanKey = findColumnKey(keys, [
         'EAN', 'ean', 'Código', 'CODIGO', 'Codigo', 
@@ -63,7 +65,7 @@ async function processIgnoredItems() {
         return new Set();
     }
     
-    // 6. Extrai todos os EANs/SKUs e os coloca em um Set (para busca O(1))
+    // Extrai todos os EANs/SKUs e os coloca em um Set (para busca O(1))
     const ignoredSet = new Set();
     
     for (const row of jsonData) {
