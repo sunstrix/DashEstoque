@@ -6,6 +6,9 @@
  * - Exclui todos os SKUs da planilha de ignorados de TODOS os cálculos, KPIs, gráficos e tabelas.
  * - Calcula todos os KPIs financeiros e de estoque.
  * - Estrutura os dados para consumo pelo frontend e aplicação de filtros (PDV/Marca).
+ * 
+ * ROBUSTEZ: Usa Promise.allSettled para permitir que planilhas auxiliares falhem
+ * sem derrubar o dashboard. Apenas a planilha principal é obrigatória.
  */
 
 const XLSX = require('xlsx');
@@ -88,50 +91,78 @@ async function parseMainSpreadsheet(buffer) {
 
 /**
  * Orquestrador principal. Baixa, cruza dados, aplica regras e calcula KPIs.
- * Exclui todos os SKUs da planilha de ignorados antes de qualquer cálculo.
+ * Usa Promise.allSettled para garantir que falhas em planilhas auxiliares
+ * (draft, segurança, ignorados) não derrubem o dashboard inteiro.
  */
 async function processAllData() {
     console.log('[dataService] 🔄 Iniciando processamento completo dos dados...');
     const startMs = getCurrentTimestampMs();
 
-    // 1. Downloads e parsing em paralelo (todas as 4 planilhas são independentes)
-    const [mainBuffer, draftCosts, safetyStockMap, ignoredEANs] = await Promise.all([
-        downloadMainSpreadsheet(),
-        processDraftCosts(),
-        processSafetyStock(),
-        processIgnoredItems()
+    // =========================================================================
+    // 1) DOWNLOADS EM PARALELO COM PROMISE.ALLSETTLED (FALLBACK INDIVIDUAL)
+    // =========================================================================
+    const results = await Promise.allSettled([
+        downloadMainSpreadsheet(), // [0] Obrigatória
+        processDraftCosts(),       // [1] Opcional
+        processSafetyStock(),      // [2] Opcional
+        processIgnoredItems()      // [3] Opcional
     ]);
 
-    console.log(`[dataService] Planilha de ignorados carregada: ${ignoredEANs.size} SKUs serão excluídos.`);
+    const [mainResult, draftResult, safetyResult, ignoredResult] = results;
 
-    // 2. Parse planilha principal
+    // -------------------------------------------------------------------------
+    // 1.1) Validação da Planilha Principal (OBRIGATÓRIA)
+    // -------------------------------------------------------------------------
+    if (mainResult.status === 'rejected') {
+        console.error('[dataService] ❌ Falha crítica: Planilha principal não pôde ser processada.');
+        throw new Error(`Falha ao baixar/parsear planilha principal: ${mainResult.reason.message}`);
+    }
+    const mainBuffer = mainResult.value;
+
+    // -------------------------------------------------------------------------
+    // 1.2) Extração das Planilhas Auxiliares (com fallback de segurança)
+    // -------------------------------------------------------------------------
+    const draftCosts = draftResult.status === 'fulfilled' ? draftResult.value : [];
+    const safetyStockMap = safetyResult.status === 'fulfilled' ? safetyResult.value : {};
+    const ignoredEANs = ignoredResult.status === 'fulfilled' ? ignoredResult.value : new Set();
+
+    // Log de avisos para planilhas auxiliares que falharam
+    if (draftResult.status === 'rejected') {
+        console.warn(`[dataService] ⚠️ Planilha draft de custos falhou: ${draftResult.reason.message}. Usando custos draft = 0.`);
+    }
+    if (safetyResult.status === 'rejected') {
+        console.warn(`[dataService] ⚠️ Planilha de estoque de segurança falhou: ${safetyResult.reason.message}. Usando estoque de segurança = 0.`);
+    }
+    if (ignoredResult.status === 'rejected') {
+        console.warn(`[dataService] ⚠️ Planilha de itens ignorados falhou: ${ignoredResult.reason.message}. Nenhum item será filtrado.`);
+    }
+
+    console.log(`[dataService] Planilhas auxiliares carregadas. Ignorados: ${ignoredEANs.size} SKUs.`);
+
+    // =========================================================================
+    // 2) PARSE DA PLANILHA PRINCIPAL
+    // =========================================================================
     const allMainItems = await parseMainSpreadsheet(mainBuffer);
     console.log(`[dataService] Planilha principal parseada: ${allMainItems.length} itens totais.`);
 
-    // 3. 🔥 FILTRO DE IGNORADOS: Remove todos os SKUs que estão na planilha de ignorados
-    // Estes itens (geralmente sacolas) não fazem sentido para as análises
-    const mainItems = allMainItems.filter(item => {
-        const isIgnored = ignoredEANs.has(item.ean);
-        if (isIgnored) {
-            // Log opcional para debug (descomente se quiser ver quais itens foram ignorados)
-            // console.log(`[dataService] Item ignorado (sacola/etc): EAN=${item.ean}, Produto=${item.produto}`);
-        }
-        return !isIgnored;
-    });
-
+    // =========================================================================
+    // 3) FILTRO DE ITENS IGNORADOS
+    // =========================================================================
+    const mainItems = allMainItems.filter(item => !ignoredEANs.has(item.ean));
     const ignoredCount = allMainItems.length - mainItems.length;
     if (ignoredCount > 0) {
         console.log(`[dataService] ⚠️ ${ignoredCount} itens foram excluídos por estarem na planilha de ignorados.`);
     }
 
-    // 4. Indexa custos draft por EAN (primeiro valor encontrado por EAN)
+    // =========================================================================
+    // 4) INDEXAÇÃO DE CUSTOS DRAFT E APLICAÇÃO DA REGRA DE CUSTO
+    // =========================================================================
     const draftByEAN = {};
     for (const dc of draftCosts) {
         const normalizedEan = normalizeEAN(dc.ean);
         if (!draftByEAN[normalizedEan]) draftByEAN[normalizedEan] = dc.custo;
     }
 
-    // 5. Aplica regra de negócio e calcula KPIs por item
     const processedItems = [];
     for (const item of mainItems) {
         const custoDraft = draftByEAN[item.ean] || 0;
@@ -156,7 +187,7 @@ async function processAllData() {
         const valorFalta = qtdFalta * custoFinal;
         const valorEstoqueAtual = item.qtdEstoque * custoFinal;
         const valorEstoqueMinimo = estoqueSeguranca * custoFinal;
-        const valorCustoEstoqueAtual = valorEstoqueAtual; // Alias conforme nomeação do KPI original
+        const valorCustoEstoqueAtual = valorEstoqueAtual;
 
         processedItems.push({
             ...item,
@@ -173,7 +204,9 @@ async function processAllData() {
         });
     }
 
-    // 6. Consolida KPIs totais e agrupa por dimensões (Marca, Curva, Categoria)
+    // =========================================================================
+    // 5) CONSOLIDAÇÃO DE KPIs E AGRUPAMENTOS
+    // =========================================================================
     const consolidatedKPIs = {
         Valor_Estoque_Atual: 0,
         Valor_Estoque_Minimo: 0,
@@ -200,12 +233,12 @@ async function processAllData() {
         consolidatedKPIs.Valor_Falta += item.valorFalta;
         consolidatedKPIs.Valor_Custo_Estoque_Atual += item.valorCustoEstoqueAtual;
 
-        // Agrupa por Marca (para gráfico comparativo)
+        // Agrupa por Marca
         if (!byBrand[item.marca]) byBrand[item.marca] = { qtdItens: 0, custoTotal: 0 };
         byBrand[item.marca].qtdItens += 1;
         byBrand[item.marca].custoTotal += item.valorEstoqueAtual;
 
-        // Agrupa por Curva (A/B/C/E)
+        // Agrupa por Curva
         const cNorm = item.curva || 'E';
         if (!byCurve[cNorm]) byCurve[cNorm] = { custoTotal: 0 };
         byCurve[cNorm].custoTotal += item.valorCustoEstoqueAtual;
@@ -215,7 +248,7 @@ async function processAllData() {
         if (!byCategory[cat]) byCategory[cat] = { qtdTotal: 0 };
         byCategory[cat].qtdTotal += item.qtdEstoque;
 
-        // Tabela de excessos críticos (valor > 0)
+        // Tabela de excessos críticos
         if (item.qtdExcesso > 0) excessosCriticos.push(item);
         
         // Tabela de faltas por marca
@@ -229,13 +262,13 @@ async function processAllData() {
         }
     }
 
-    // Ordena excessos por valor decrescente (limita a 100 para performance no frontend)
+    // Ordena excessos por valor decrescente (limita a 100)
     excessosCriticos.sort((a, b) => b.valorExcesso - a.valorExcesso);
 
     const endMs = getCurrentTimestampMs();
     const processingTime = ((endMs - startMs) / 1000).toFixed(2);
 
-    console.log(`[dataService] ✅ Processamento concluído em ${processingTime}s. ${processedItems.length} itens processados (${ignoredCount} ignorados).`);
+    console.log(`[dataService] ✅ Processamento concluído em ${processingTime}s. ${processedItems.length} itens processados.`);
 
     return {
         timestamp: getBrasiliaTime(),
@@ -245,9 +278,15 @@ async function processAllData() {
         byCategory,
         excessosCriticos: excessosCriticos.slice(0, 100),
         faltasPorMarca,
-        allItems: processedItems, // Mantido para filtros dinâmicos no frontend (já sem os ignorados)
-        ignoredCount: ignoredCount, // Informação para o frontend saber quantos itens foram excluídos
-        processingTime
+        allItems: processedItems,
+        ignoredCount: ignoredCount,
+        processingTime,
+        // Metadados de saúde do sistema para o frontend/api
+        systemHealth: {
+            hasDraftCosts: draftCosts.length > 0,
+            hasSafetyStock: Object.keys(safetyStockMap).length > 0,
+            hasIgnoredItems: ignoredEANs.size > 0
+        }
     };
 }
 
