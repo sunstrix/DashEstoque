@@ -5,6 +5,10 @@
  * - Faz o parsing das abas BOT, EUD e QDB.
  * - Extrai o estoque de segurança por EAN/Código.
  * - Retorna um mapa consolidado (EAN -> Estoque de Segurança) para uso no dataService.
+ * 
+ * ROBUSTEZ: Se a planilha falhar ao baixar (URL ausente, erro de rede, etc.),
+ * o serviço retorna um objeto vazio {} em vez de quebrar o dashboard.
+ * Neste caso, o dataService.js considerará o estoque de segurança = 0 para todos os itens.
  */
 
 const XLSX = require('xlsx');
@@ -69,11 +73,26 @@ function processSafetySheet(sheet, sheetName) {
 /**
  * Processa a planilha de estoque de segurança completa.
  * @returns {Promise<Object>} - Objeto onde a chave é o EAN e o valor é o estoque de segurança (número).
+ *                               Retorna objeto vazio {} se a planilha falhar ao baixar.
  */
 async function processSafetyStock() {
     console.log('[safetyStockService] Iniciando processamento da planilha de estoque de segurança...');
     
-    const buffer = await downloadSafetySpreadsheet();
+    // =========================================================================
+    // TRATAMENTO DE ERRO INDIVIDUAL (FALLBACK SE O DOWNLOAD FALHAR)
+    // =========================================================================
+    let buffer;
+    try {
+        buffer = await downloadSafetySpreadsheet();
+    } catch (error) {
+        console.warn(`[safetyStockService] ⚠️ Falha ao baixar planilha de estoque de segurança: ${error.message}`);
+        console.warn('[safetyStockService] ️ Continuando com estoque de segurança = 0 para todos os itens.');
+        return {};
+    }
+    
+    // =========================================================================
+    // PARSING DO EXCEL (Lógica original preservada)
+    // =========================================================================
     const workbook = XLSX.read(buffer, { type: 'buffer' });
     
     // Mapeamento das abas da planilha de segurança
