@@ -5,6 +5,7 @@
  * - POST /api/refresh: Força a atualização dos dados, limpando o cache
  * - Implementa cache em memória com TTL de 1 hora para otimizar performance
  * - Tratamento robusto de erros com logs estruturados e mensagens acionáveis
+ * - Suporte a "Modo Parcial": retorna avisos (warnings) se planilhas auxiliares falharem
  */
 
 const express = require('express');
@@ -12,6 +13,10 @@ const router = express.Router();
 
 const dataService = require('../services/dataService');
 const { CACHE_TTL_MS } = require('../config/constants');
+const { 
+    validateEnvironment, 
+    getMissingEnvVars 
+} = require('../config/validateEnv');
 
 // ============================================================================
 // ESTADO DO CACHE EM MEMÓRIA
@@ -42,28 +47,37 @@ function getLogTimestamp() {
 /**
  * Extrai uma mensagem de erro amigável e acionável a partir do erro original.
  * Classifica o erro em categorias para facilitar debug e exibição ao usuário.
+ * Detecta especificamente qual variável de ambiente está faltando.
  *
  * @param {Error} error - Objeto de erro capturado
- * @returns {{ category: string, message: string, isUserFriendly: boolean }}
+ * @returns {{ category: string, message: string, missingEnvVars: string[], isUserFriendly: boolean }}
  */
 function classifyError(error) {
     const msg = (error && error.message) || 'Erro desconhecido';
-    const stack = (error && error.stack) || '';
+    
+    // Regex para extrair o nome da variável de ambiente da mensagem de erro do downloadService
+    // Ex: "... | Variável de ambiente: SPREADSHEET_DRAFT_URL"
+    const envVarRegex = /Variável de ambiente:\s*([A-Z_]+)/;
+    const match = msg.match(envVarRegex);
+    const missingEnvVars = match ? [match[1]] : [];
 
-    // Categoria 1: Erros de download (SharePoint/Google Sheets)
-    if (msg.includes('[downloadService]') || msg.toLowerCase().includes('download')) {
+    // Categoria 1: Erros de configuração (URL ausente ou inválida)
+    if (msg.includes('URL inválida ou não configurada') || msg.includes('placeholder') || missingEnvVars.length > 0) {
+        const varName = missingEnvVars[0] || 'variável desconhecida';
         return {
-            category: 'DOWNLOAD_ERROR',
-            message: 'Falha ao baixar uma ou mais planilhas. Verifique se as URLs no .env estão corretas e se as planilhas estão compartilhadas publicamente.',
+            category: 'CONFIG_ERROR',
+            message: `A variável ${varName} não está configurada no arquivo .env. Configure a URL da planilha correspondente para habilitar este recurso.`,
+            missingEnvVars: missingEnvVars,
             isUserFriendly: true
         };
     }
 
-    // Categoria 2: URL inválida ou não configurada
-    if (msg.includes('URL inválida') || msg.includes('não configurada') || msg.includes('placeholder')) {
+    // Categoria 2: Erros de download (SharePoint/Google Sheets indisponível)
+    if (msg.includes('[downloadService]') || msg.toLowerCase().includes('download')) {
         return {
-            category: 'CONFIG_ERROR',
-            message: 'Configuração incorreta. Verifique o arquivo .env e certifique-se de que todas as URLs das planilhas estão definidas.',
+            category: 'DOWNLOAD_ERROR',
+            message: 'Falha ao baixar uma ou mais planilhas. Verifique se as URLs no .env estão corretas e se as planilhas estão compartilhadas publicamente.',
+            missingEnvVars: missingEnvVars,
             isUserFriendly: true
         };
     }
@@ -72,7 +86,8 @@ function classifyError(error) {
     if (msg.includes('sheet_to_json') || msg.includes('XLSX') || msg.toLowerCase().includes('aba') || msg.toLowerCase().includes('coluna')) {
         return {
             category: 'PARSING_ERROR',
-            message: 'Erro ao processar planilha. Verifique se as abas e colunas estão nomeadas conforme o esperado (BOTICARIO, EUDORA, QUEM_DISSE_BERENICE, etc.).',
+            message: 'Erro ao processar planilha. Verifique se as abas e colunas estão nomeadas conforme o esperado.',
+            missingEnvVars: missingEnvVars,
             isUserFriendly: true
         };
     }
@@ -82,6 +97,7 @@ function classifyError(error) {
         return {
             category: 'NETWORK_ERROR',
             message: 'Problema de conectividade. Verifique sua conexão com a internet e tente novamente.',
+            missingEnvVars: missingEnvVars,
             isUserFriendly: true
         };
     }
@@ -90,16 +106,15 @@ function classifyError(error) {
     return {
         category: 'PROCESSING_ERROR',
         message: msg.length > 200 ? msg.substring(0, 200) + '...' : msg,
+        missingEnvVars: missingEnvVars,
         isUserFriendly: false
     };
 }
 
 /**
  * Registra log estruturado de erro no console do servidor.
- * Inclui timestamp, categoria, método HTTP, path e stack trace.
- *
  * @param {Object} options - Opções do log
- * @param {string} options.route - Rota onde ocorreu o erro (ex: 'GET /api/data')
+ * @param {string} options.route - Rota onde ocorreu o erro
  * @param {Error} options.error - Objeto de erro
  * @param {string} options.category - Categoria classificada do erro
  */
@@ -116,6 +131,31 @@ function logError({ route, error, category }) {
         });
     }
     console.error('');
+}
+
+/**
+ * Gera avisos (warnings) para o frontend com base no systemHealth retornado pelo dataService.
+ * Indica quais planilhas auxiliares falharam e o impacto disso no dashboard.
+ * 
+ * @param {Object} systemHealth - Objeto systemHealth do dataService
+ * @returns {Array<string>} Array de mensagens de aviso
+ */
+function generateWarnings(systemHealth) {
+    const warnings = [];
+    
+    if (!systemHealth || typeof systemHealth !== 'object') return warnings;
+
+    if (systemHealth.hasDraftCosts === false) {
+        warnings.push('⚠️ Planilha de custos (draft) não disponível. Os custos serão calculados apenas com base no preço de tabela.');
+    }
+    if (systemHealth.hasSafetyStock === false) {
+        warnings.push('⚠️ Planilha de estoque de segurança não disponível. Não haverá cálculo de excesso/falta.');
+    }
+    if (systemHealth.hasIgnoredItems === false) {
+        warnings.push('⚠️ Planilha de itens ignorados não disponível. Itens como sacolas podem aparecer nos cálculos.');
+    }
+
+    return warnings;
 }
 
 // ============================================================================
@@ -157,9 +197,14 @@ router.get('/data', async (req, res) => {
     const routeLabel = 'GET /api/data';
     try {
         const data = await getData();
+        
+        // Gera avisos se o dashboard estiver em modo parcial
+        const warnings = generateWarnings(data.systemHealth);
+        
         res.json({
             success: true,
-            data
+            data,
+            warnings // Array vazio se tudo estiver OK
         });
     } catch (error) {
         const classified = classifyError(error);
@@ -169,7 +214,7 @@ router.get('/data', async (req, res) => {
             success: false,
             message: classified.message,
             errorCategory: classified.category,
-            // Inclui mensagem técnica apenas para erros não-amigáveis (ajuda dev)
+            missingEnvVars: classified.missingEnvVars,
             technicalMessage: !classified.isUserFriendly && error ? error.message : undefined
         });
     }
@@ -195,24 +240,25 @@ router.post('/refresh', async (req, res) => {
 
         // Busca os dados novamente
         const data = await getData();
+        
+        // Gera avisos se o dashboard estiver em modo parcial
+        const warnings = generateWarnings(data.systemHealth);
 
         res.json({
             success: true,
             message: 'Dados atualizados com sucesso.',
-            data
+            data,
+            warnings
         });
     } catch (error) {
         const classified = classifyError(error);
         logError({ route: routeLabel, error, category: classified.category });
 
-        // Em caso de erro no refresh, tenta restaurar o cache anterior se existir
-        // (a invalidação foi feita, mas se o novo processamento falhou, não há o que restaurar —
-        //  apenas logamos e retornamos erro claro)
-
         res.status(500).json({
             success: false,
             message: `Falha ao forçar atualização. ${classified.message}`,
             errorCategory: classified.category,
+            missingEnvVars: classified.missingEnvVars,
             technicalMessage: !classified.isUserFriendly && error ? error.message : undefined
         });
     }
