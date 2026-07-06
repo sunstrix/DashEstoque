@@ -1,23 +1,28 @@
 /**
  * constants.js
  * Centraliza todas as constantes do projeto DashEstoque:
- * - URLs das planilhas do Google Sheets
- * - Nomes das abas
+ * - URLs das planilhas do SharePoint (migradas do Google Sheets)
+ * - Nomes das abas das planilhas Excel
+ * - Mapeamento de lojas para os 17 PDVs
  * - Cores do tema visual
  * - TTL de cache
- * - Mapeamento de lojas para PDVs
- * - Nomes das marcas
  */
 
 // ============================================================================
-// URLs DAS PLANILHAS (Google Sheets - export xlsx público)
+// URLs DAS PLANILHAS (SharePoint - links públicos com download direto)
 // ============================================================================
-// IMPORTANTE: Substitua os valores abaixo pelas URLs reais das suas planilhas.
-// O formato esperado é o link público de exportação xlsx do Google Sheets.
 const SPREADSHEET_URLS = {
-    MAIN: process.env.SPREADSHEET_MAIN_URL || 'COLE_AQUI_A_URL_DA_PLANILHA_PRINCIPAL_XLSX',
-    SAFETY: process.env.SPREADSHEET_SAFETY_URL || 'COLE_AQUI_A_URL_DA_PLANILHA_ESTOQUE_SEGURANCA_XLSX',
-    DRAFT: process.env.SPREADSHEET_DRAFT_URL || 'COLE_AQUI_A_URL_DA_PLANILHA_DRAFT_CUSTOS_XLSX'
+    // Planilha principal: CONSULTA_DE_ESTOQUE.xlsx
+    MAIN: process.env.SPREADSHEET_MAIN_URL || '',
+    
+    // Planilha de estoque de segurança: Planilha Retaguarda.xlsx
+    SAFETY_STOCK: process.env.SPREADSHEET_SAFETY_STOCK_URL || '',
+    
+    // Planilha draft de custos: DRAFT_PDVS.xlsx
+    DRAFT: process.env.SPREADSHEET_DRAFT_URL || '',
+    
+    // Planilha de ignorados: IGNORADOS.xlsx
+    IGNORED: process.env.SPREADSHEET_IGNORED_URL || ''
 };
 
 // ============================================================================
@@ -25,6 +30,8 @@ const SPREADSHEET_URLS = {
 // ============================================================================
 const SHEET_NAMES = {
     // Abas da planilha principal (estoque, preço tabela, classe, categoria)
+    // ATENÇÃO: Estes nomes devem corresponder EXATAMENTE aos nomes das abas no Excel
+    // (case-insensitive, mas preferencialmente em maiúsculas)
     MAIN: {
         BOTICARIO: 'BOTICARIO',
         EUDORA: 'EUDORA',
@@ -41,26 +48,26 @@ const SHEET_NAMES = {
 // ============================================================================
 // MAPEAMENTO DE LOJAS PARA OS 17 PDVs
 // ============================================================================
-// IMPORTANTE: Substitua os valores abaixo pelos nomes reais das lojas
-// que correspondem a cada PDV, conforme o draft de custos.
+// Este mapeamento é usado para converter o nome da loja (da planilha draft)
+// para o código numérico do PDV que aparece no frontend
 const PDV_MAPPING = {
-    'PDV 01': ['LOJA_EXEMPLO_1', 'LOJA_EXEMPLO_2'],
-    'PDV 02': ['LOJA_EXEMPLO_3'],
-    'PDV 03': ['LOJA_EXEMPLO_4'],
-    'PDV 04': ['LOJA_EXEMPLO_5'],
-    'PDV 05': ['LOJA_EXEMPLO_6'],
-    'PDV 06': ['LOJA_EXEMPLO_7'],
-    'PDV 07': ['LOJA_EXEMPLO_8'],
-    'PDV 08': ['LOJA_EXEMPLO_9'],
-    'PDV 09': ['LOJA_EXEMPLO_10'],
-    'PDV 10': ['LOJA_EXEMPLO_11'],
-    'PDV 11': ['LOJA_EXEMPLO_12'],
-    'PDV 12': ['LOJA_EXEMPLO_13'],
-    'PDV 13': ['LOJA_EXEMPLO_14'],
-    'PDV 14': ['LOJA_EXEMPLO_15'],
-    'PDV 15': ['LOJA_EXEMPLO_16'],
-    'PDV 16': ['LOJA_EXEMPLO_17'],
-    'PDV 17': ['LOJA_EXEMPLO_18']
+    '4842': ['4842', 'METROPOLE', 'N. S. F. COSMETICOS E PRESENTES LTDA', 'LOJA: 4842'],
+    '5152': ['5152', 'CORACAO', 'N. S. F. COSMETICOS E PRESENTES LTDA', 'LOJA: 5152'],
+    '6105': ['6105', 'ASSAI ANCHIETA', 'N. S. F. COSMETICOS E PRESENTES LTDA', 'LOJA: 6105'],
+    '6106': ['6106', 'DIREITA', 'N. S. F. COSMETICOS E PRESENTES LTDA', 'LOJA: 6106'],
+    '6110': ['6110', 'AROCHE', 'N. S. F. COSMETICOS E PRESENTES LTDA', 'LOJA: 6110'],
+    '8001': ['8001', 'DOM JOSE', 'N. S. F. COSMETICOS E PRESENTES LTDA', 'LOJA: 8001'],
+    '11576': ['11576', 'DAVO', 'N. S. F. COSMETICOS E PRESENTES LTDA', 'LOJA: 11576'],
+    '12055': ['12055', 'SAO BENTO', 'N. S. F. COSMETICOS E PRESENTES LTDA', 'LOJA: 12055'],
+    '12056': ['12056', 'MARECHAL', 'S. P. ARON COSMETICOS EPP', 'LOJA: 12056'],
+    '12605': ['12605', 'COOP', 'N.S.F. COSMETICOS E PRESENTES LTDA.', 'LOJA: 12605'],
+    '12645': ['12645', 'LIGHT', 'N. S. F. COSMETICOS E PRESENTES LTDA', 'LOJA: 12645'],
+    '14120': ['14120', 'VD SBC', 'ARPEL DISTRIBUIDORA DE COSMETICOS LTDA - EPP', 'LOJA: 14120'],
+    '14353': ['14353', 'VD SP', 'ARPEL DISTRIBUIDORA DE COSMETICOS LTDA - EPP', 'LOJA: 14353'],
+    '20371': ['20371', 'LUZ', 'N. S. F. COSMÉTICOS E PRESENTES LTDA.', 'LOJA: 20371'],
+    '21502': ['21502', 'BEM BARATO', 'N. S. F. COSMETICOS E PRESENTES LTD', 'LOJA: 21502'],
+    '23000': ['23000', 'OUTLET', 'N. S. F. COSMETICOS E PRESENTES LTD', 'LOJA: 23000'],
+    '23379': ['23379', 'ASSAI PIRAPORINHA', 'N. S. F. COSMETICOS E PRESENTES LTD', 'LOJA: 23379']
 };
 
 // Lista de todos os PDVs disponíveis (para filtros)
@@ -89,7 +96,7 @@ const THEME_COLORS = {
     QDB_RED: '#ff4b4b',
     TEXT_PRIMARY: '#ffffff',
     TEXT_SECONDARY: '#cccccc',
-    BORDER: '#333333'
+    BORDER: '#30363d'
 };
 
 // Mapeamento de marca para cor (usado nos gráficos)
@@ -102,7 +109,7 @@ const BRAND_COLORS = {
 // ============================================================================
 // CONFIGURAÇÕES DE CACHE
 // ============================================================================
-const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hora em milissegundos (equivale ao @st.cache_data(ttl=3600))
+const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hora em milissegundos
 
 // ============================================================================
 // CONFIGURAÇÕES DE RETRY (download das planilhas)
