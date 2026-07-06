@@ -16,6 +16,7 @@
  */
 
 const axios = require('axios');
+const XLSX = require('xlsx'); // Adicionado para debug dos SheetNames
 
 // ============================================================================
 // CONSTANTES E CONFIGURAÇÕES
@@ -317,6 +318,23 @@ async function downloadWithRetry(url, envVarName = null) {
                         throw new Error('Conteúdo baixado é HTML, não arquivo Excel. Possível problema de autenticação ou URL incorreta.');
                     }
                 }
+
+                // =========================================================================
+                // 🔍 LOG DE DEBUG TEMPORÁRIO - MOSTRAR SHEETNAMES REAIS
+                // =========================================================================
+                try {
+                    const workbook = XLSX.read(buffer, { type: 'buffer' });
+                    console.log(`[DEBUG] ✅ DOWNLOAD BEM-SUCEDIDO [${envVarName || 'desconhecido'}]:`);
+                    console.log(`[DEBUG]    Tamanho do buffer: ${(buffer.length / 1024).toFixed(2)} KB`);
+                    console.log(`[DEBUG]    Número de abas: ${workbook.SheetNames.length}`);
+                    console.log(`[DEBUG]    Nomes das abas (SheetNames): ${JSON.stringify(workbook.SheetNames)}`);
+                    console.log(`[DEBUG]    Primeira assinatura (hex): ${firstBytes}`);
+                } catch (parseError) {
+                    console.warn(`[DEBUG] ⚠️ Falha ao parsear workbook para debug: ${parseError.message}`);
+                }
+                // =========================================================================
+                // FIM DO LOG DE DEBUG TEMPORÁRIO
+                // =========================================================================
 
                 console.log(`[downloadService] ✅ Download concluído! Tamanho: ${(buffer.length / 1024).toFixed(2)} KB`);
                 return buffer;
