@@ -5,8 +5,9 @@
  * - Extrai todos os EANs/SKUs que devem ser excluídos do dashboard.
  * - Retorna um Set de SKUs ignorados para busca O(1) no dataService.
  * 
- * Esses itens (geralmente sacolas) não fazem sentido para as análises
- * e devem ser completamente excluídos de todos os cálculos, KPIs, gráficos e tabelas.
+ * ROBUSTEZ: Se a planilha falhar ao baixar (URL ausente, erro de rede, etc.),
+ * o serviço retorna um Set vazio new Set() em vez de quebrar o dashboard.
+ * Neste caso, itens como sacolas não serão filtrados e aparecerão nos cálculos.
  */
 
 const XLSX = require('xlsx');
@@ -25,16 +26,26 @@ function findColumnKey(keys, patterns) {
 /**
  * Processa a planilha de itens ignorados.
  * @returns {Promise<Set<string>>} - Set contendo todos os EANs/SKUs que devem ser ignorados.
+ *                                   Retorna Set vazio new Set() se a planilha falhar ao baixar.
  */
 async function processIgnoredItems() {
     console.log('[ignoredService] Iniciando processamento da planilha de itens ignorados...');
     
-    // CORREÇÃO: usa função wrapper downloadIgnoredItemsSpreadsheet() em vez de
-    // downloadWithRetry(SPREADSHEET_URLS.IGNORED), alinhando com o padrão dos outros services
-    // (draftService.js e safetyStockService.js) e garantindo que a URL seja lida diretamente
-    // de process.env.SPREADSHEET_IGNORED_URL no downloadService.js.
-    const buffer = await downloadIgnoredItemsSpreadsheet();
+    // =========================================================================
+    // TRATAMENTO DE ERRO INDIVIDUAL (FALLBACK SE O DOWNLOAD FALHAR)
+    // =========================================================================
+    let buffer;
+    try {
+        buffer = await downloadIgnoredItemsSpreadsheet();
+    } catch (error) {
+        console.warn(`[ignoredService] ⚠️ Falha ao baixar planilha de itens ignorados: ${error.message}`);
+        console.warn('[ignoredService] ⚠️ Continuando sem filtro de ignorados (sacolas/etc. aparecerão nos cálculos).');
+        return new Set();
+    }
     
+    // =========================================================================
+    // PARSING DO EXCEL (Lógica original preservada)
+    // =========================================================================
     // Faz o parsing do buffer para um workbook do Excel
     const workbook = XLSX.read(buffer, { type: 'buffer' });
     
