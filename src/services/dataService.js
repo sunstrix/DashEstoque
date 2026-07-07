@@ -6,6 +6,7 @@
  * - Exclui todos os SKUs da planilha de ignorados de TODOS os cálculos, KPIs, gráficos e tabelas.
  * - Calcula todos os KPIs financeiros e de estoque.
  * - Estrutura os dados para consumo pelo frontend e aplicação de filtros (PDV/Marca).
+ * - Calcula DDV (Demanda Diária de Venda), Cobertura de Estoque e Estoque em Trânsito.
  * 
  * ROBUSTEZ: Usa Promise.allSettled para permitir que planilhas auxiliares falhem
  * sem derrubar o dashboard. Apenas a planilha principal é obrigatória.
@@ -52,7 +53,56 @@ function normalizeEAN(ean) {
 }
 
 /**
+ * Extrai o total do histórico de vendas de uma linha.
+ * Replica a lógica do app.py original: soma das colunas I até Z (índices 8 a 25).
+ * 
+ * @param {Object} row - Objeto de linha do sheet_to_json
+ * @param {Array<string>} keys - Array de chaves (nomes das colunas) da linha
+ * @returns {number} Total do histórico de vendas
+ */
+function extrairHistoricoVendas(row, keys) {
+    let total = 0;
+    
+    // Estratégia 1: Tentar encontrar colunas de histórico por nome (mais robusto)
+    const historicoKeys = keys.filter(k => {
+        const kUpper = k.toUpperCase().trim();
+        return (
+            kUpper.startsWith('MÊS') || kUpper.startsWith('MES') ||
+            kUpper.startsWith('JAN') || kUpper.startsWith('FEV') ||
+            kUpper.startsWith('MAR') || kUpper.startsWith('ABR') ||
+            kUpper.startsWith('MAI') || kUpper.startsWith('JUN') ||
+            kUpper.startsWith('JUL') || kUpper.startsWith('AGO') ||
+            kUpper.startsWith('SET') || kUpper.startsWith('OUT') ||
+            kUpper.startsWith('NOV') || kUpper.startsWith('DEZ') ||
+            kUpper.startsWith('VENDA') || kUpper.startsWith('VENDAS') ||
+            /^\d{2}\/\d{4}$/.test(kUpper) || // Formato MM/YYYY
+            /^\d{4}$/.test(kUpper) // Apenas ano
+        );
+    });
+    
+    if (historicoKeys.length > 0) {
+        for (const key of historicoKeys) {
+            total += toFloat(row[key]);
+        }
+        return total;
+    }
+    
+    // Estratégia 2 (fallback): Usar índices 8-25 (colunas I-Z) como no Python original
+    // Isso replica exatamente o comportamento do app.py: colunas I (índice 8) até Z (índice 25)
+    if (keys.length >= 26) {
+        for (let i = 8; i <= 25; i++) {
+            total += toFloat(row[keys[i]]);
+        }
+    }
+    
+    return total;
+}
+
+/**
  * Processa a planilha principal (abas BOTICARIO, EUDORA, QUEM_DISSE_BERENICE).
+ * 
+ * CORREÇÃO BUG 2: Agora valida se as abas esperadas existem e lança erro claro se não existirem.
+ * CORREÇÃO BUG 4: Agora extrai histórico de vendas, calcula DDV, Cobertura e lê Estoque em Trânsito.
  */
 async function parseMainSpreadsheet(buffer) {
     const workbook = XLSX.read(buffer, { type: 'buffer' });
@@ -64,26 +114,109 @@ async function parseMainSpreadsheet(buffer) {
         [SHEET_NAMES.MAIN.QUEM_DISSE_BERENICE]: 'Quem Disse Berenice?'
     };
 
-    for (const sheetName of Object.keys(brandMap)) {
-        const sheet = workbook.Sheets[sheetName];
+    const expectedSheets = Object.keys(brandMap);
+    const availableSheets = workbook.SheetNames;
+    
+    // =========================================================================
+    // CORREÇÃO BUG 2: Validação rigorosa das abas esperadas
+    // =========================================================================
+    const abasEncontradas = [];
+    const abasFaltantes = [];
+    
+    for (const expectedSheet of expectedSheets) {
+        const found = availableSheets.find(s => 
+            s.toUpperCase().trim() === expectedSheet.toUpperCase().trim()
+        );
+        if (found) {
+            abasEncontradas.push({ esperado: expectedSheet, real: found });
+        } else {
+            abasFaltantes.push(expectedSheet);
+        }
+    }
+    
+    console.log(`[dataService] 📋 Abas disponíveis no arquivo: ${JSON.stringify(availableSheets)}`);
+    console.log(`[dataService] 📋 Abas esperadas encontradas: ${abasEncontradas.length}/${expectedSheets.length}`);
+    
+    if (abasFaltantes.length > 0) {
+        console.warn(`[dataService] ⚠️ Abas faltantes: ${JSON.stringify(abasFaltantes)}`);
+    }
+    
+    // Se NENHUMA das abas esperadas foi encontrada, lançar erro claro
+    if (abasEncontradas.length === 0) {
+        const errorMsg = `[dataService] ❌ NENHUMA das abas esperadas foi encontrada no arquivo baixado. ` +
+            `Abas esperadas: ${JSON.stringify(expectedSheets)}. ` +
+            `Abas disponíveis no arquivo: ${JSON.stringify(availableSheets)}. ` +
+            `Verifique se a URL no .env está apontando para a planilha correta.`;
+        console.error(errorMsg);
+        throw new Error(errorMsg);
+    }
+    
+    // Se algumas abas estão faltando (mas pelo menos uma existe), logar aviso e continuar
+    if (abasFaltantes.length > 0 && abasEncontradas.length > 0) {
+        console.warn(`[dataService] ⚠️ Algumas abas esperadas não foram encontradas. ` +
+            `Faltando: ${JSON.stringify(abasFaltantes)}. ` +
+            `Processando apenas as abas disponíveis.`);
+    }
+
+    // =========================================================================
+    // PARSING DAS ABAS ENCONTRADAS
+    // =========================================================================
+    for (const { esperado, real } of abasEncontradas) {
+        const sheet = workbook.Sheets[real];
         if (!sheet) continue;
 
         const rawData = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-        const marca = brandMap[sheetName];
+        const marca = brandMap[esperado];
+        let itensDaAba = 0;
 
         for (const row of rawData) {
-            const eanRaw = String(row[findKey(row, ['EAN', 'CÓDIGO', 'CODIGO', 'SKU', 'CÓD. EAN'])] || '').trim();
+            const keys = Object.keys(row);
+            
+            const eanRaw = String(row[findKey(row, ['EAN', 'CÓDIGO', 'CODIGO', 'SKU', 'CÓD. EAN', 'COD. EAN'])] || '').trim();
             const ean = normalizeEAN(eanRaw);
             if (!ean) continue;
 
-            const qtdEstoque = toFloat(row[findKey(row, ['QTD', 'ESTOQUE', 'QUANTIDADE', 'QTD ESTOQUE', 'SALDO'])]);
-            const precoTabela = toFloat(row[findKey(row, ['PREÇO TABELA', 'PRECO TABELA', 'VALOR', 'PREÇO', 'PRECO'])]);
+            const qtdEstoque = toFloat(row[findKey(row, ['QTD', 'ESTOQUE', 'QUANTIDADE', 'QTD ESTOQUE', 'SALDO', 'SALDO ATUAL'])]);
+            const precoTabela = toFloat(row[findKey(row, ['PREÇO TABELA', 'PRECO TABELA', 'VALOR', 'PREÇO', 'PRECO', 'VALOR UNITÁRIO', 'VALOR UNITARIO'])]);
             const curva = String(row[findKey(row, ['CURVA', 'CLASSE', 'CLASSIFICAÇÃO', 'CLASSIFICACAO'])] || 'E').trim().toUpperCase();
             const categoria = String(row[findKey(row, ['CATEGORIA', 'GRUPO', 'FAMÍLIA', 'FAMILIA'])] || 'Outros').trim();
-            const produto = String(row[findKey(row, ['PRODUTO', 'NOME', 'DESCRIÇÃO', 'DESCRICAO', 'ITEM'])] || '').trim();
+            const produto = String(row[findKey(row, ['PRODUTO', 'NOME', 'DESCRIÇÃO', 'DESCRICAO', 'ITEM', 'DESCRIÇÃO DO PRODUTO', 'DESCRICAO DO PRODUTO'])] || '').trim();
+            
+            // CORREÇÃO BUG 4: Extrair histórico de vendas e calcular DDV
+            const historicoTotal = extrairHistoricoVendas(row, keys);
+            const ddv = historicoTotal > 0 ? historicoTotal / 365 : 0;
+            
+            // CORREÇÃO BUG 4: Calcular cobertura de estoque (null se DDV = 0)
+            const coberturaEstoque = ddv > 0 ? qtdEstoque / ddv : null;
+            
+            // CORREÇÃO BUG 4: Ler coluna Estoque em Trânsito (com múltiplos nomes possíveis)
+            const estoqueTransito = toFloat(row[findKey(row, [
+                'Estoque em Trânsito', 'Estoque em Transito',
+                'ESTOQUE EM TRÂNSITO', 'ESTOQUE EM TRANSITO',
+                'Estoque Trânsito', 'Estoque Transito',
+                'Em Trânsito', 'Em Transito',
+                'TRÂNSITO', 'TRANSITO',
+                'Estoque em Transito', 'EM TRÂNSITO', 'EM TRANSITO'
+            ])]);
 
-            items.push({ ean, produto, marca, qtdEstoque, precoTabela, curva, categoria });
+            items.push({ 
+                ean, 
+                produto, 
+                marca, 
+                qtdEstoque, 
+                precoTabela, 
+                curva, 
+                categoria,
+                // CORREÇÃO BUG 4: Novos campos
+                historicoTotal,
+                ddv,
+                coberturaEstoque,
+                estoqueTransito
+            });
+            itensDaAba++;
         }
+        
+        console.log(`[dataService] ✅ Aba '${real}' processada: ${itensDaAba} itens extraídos.`);
     }
 
     return items;
@@ -145,6 +278,11 @@ async function processAllData() {
     const allMainItems = await parseMainSpreadsheet(mainBuffer);
     console.log(`[dataService] Planilha principal parseada: ${allMainItems.length} itens totais.`);
 
+    // CORREÇÃO BUG 2: Se não há itens após parse, lançar erro claro
+    if (allMainItems.length === 0) {
+        throw new Error('[dataService] ❌ A planilha principal foi baixada mas não contém nenhum item válido. Verifique a estrutura das colunas (EAN/Código, QTD/Estoque, etc.).');
+    }
+
     // =========================================================================
     // 3) FILTRO DE ITENS IGNORADOS
     // =========================================================================
@@ -188,6 +326,9 @@ async function processAllData() {
         const valorEstoqueAtual = item.qtdEstoque * custoFinal;
         const valorEstoqueMinimo = estoqueSeguranca * custoFinal;
         const valorCustoEstoqueAtual = valorEstoqueAtual;
+        
+        // CORREÇÃO BUG 4: Recalcular cobertura com base no custo final
+        const coberturaEstoqueValor = item.ddv > 0 ? valorEstoqueAtual / (item.ddv * custoFinal) : null;
 
         processedItems.push({
             ...item,
@@ -200,7 +341,9 @@ async function processAllData() {
             valorFalta,
             valorEstoqueAtual,
             valorEstoqueMinimo,
-            valorCustoEstoqueAtual
+            valorCustoEstoqueAtual,
+            // CORREÇÃO BUG 4: Campo adicional de cobertura em valor
+            coberturaEstoqueValor
         });
     }
 
