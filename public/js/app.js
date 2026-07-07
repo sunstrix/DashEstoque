@@ -6,13 +6,15 @@
  * - Aplica filtros de PDV e Marca nos dados brutos.
  * - Atualiza os KPIs, gráficos e tabelas dinamicamente.
  * - Controla o overlay de carregamento, o botão de atualização e o badge de itens ignorados.
+ * - CORREÇÃO BUG 3: Consome lista real de PDVs do backend (availablePdvs) em vez de hardcode.
  */
 
 // ============================================================================
 // ESTADO GLOBAL
 // ============================================================================
-let globalData = null; // Armazena a resposta completa da API
+let globalData = null;        // Armazena a resposta completa da API
 let currentFilteredItems = []; // Armazena os itens após a aplicação dos filtros
+let availablePdvs = [];       // Lista real de PDVs (do backend)
 
 // ============================================================================
 // ELEMENTOS DO DOM
@@ -28,6 +30,9 @@ const DOM = {
     // Badge de itens ignorados
     ignoredBadge: document.getElementById('ignored-badge'),
     ignoredCount: document.getElementById('ignored-count'),
+    
+    // Container de avisos (modo parcial)
+    warningsContainer: document.getElementById('warnings-container'),
     
     // KPIs
     kpiValorEstoque: document.getElementById('kpi-valor-estoque'),
@@ -90,6 +95,76 @@ function updateIgnoredBadge(count) {
     }
 }
 
+/**
+ * Renderiza avisos (warnings) do backend no topo do dashboard.
+ * Esses avisos indicam quando o dashboard está em "modo parcial"
+ * (ex: planilha draft ausente, safety stock ausente, etc.).
+ * 
+ * @param {Array<string>} warnings - Array de mensagens de aviso
+ */
+function renderWarnings(warnings) {
+    if (!DOM.warningsContainer) return;
+    
+    // Limpa avisos anteriores
+    DOM.warningsContainer.innerHTML = '';
+    
+    if (!warnings || warnings.length === 0) {
+        DOM.warningsContainer.classList.add('hidden');
+        return;
+    }
+    
+    // Cria banner de aviso para cada mensagem
+    for (const warning of warnings) {
+        const banner = document.createElement('div');
+        banner.className = 'warning-banner';
+        banner.innerHTML = `<span class="warning-icon">⚠️</span><span>${warning}</span>`;
+        DOM.warningsContainer.appendChild(banner);
+    }
+    
+    DOM.warningsContainer.classList.remove('hidden');
+}
+
+// ============================================================================
+// CORREÇÃO BUG 3: POPULAR SELECT DE PDVs COM LISTA REAL DO BACKEND
+// ============================================================================
+
+/**
+ * Popula o <select> de PDVs com a lista real vinda do backend.
+ * CORREÇÃO BUG 3: Substitui a versão hardcoded ("PDV 01"..."PDV 17")
+ * por valores reais como "4842 - Metrópole", "5152 - Coração", etc.
+ * 
+ * @param {Array<Object>} pdvs - Lista de PDVs do backend
+ *   Cada PDV tem: { code: '4842', name: 'Metrópole', displayName: '4842 - Metrópole' }
+ */
+function populatePdvFilter(pdvs) {
+    if (!DOM.filterPdv) return;
+    
+    // Preserva a opção "Todos os PDVs" que já existe no HTML
+    // Remove apenas as opções adicionadas dinamicamente anteriormente
+    const allOptions = Array.from(DOM.filterPdv.options);
+    for (let i = allOptions.length - 1; i >= 1; i--) {
+        DOM.filterPdv.remove(i);
+    }
+    
+    // Se não há PDVs disponíveis, adiciona opção indicando isso
+    if (!pdvs || pdvs.length === 0) {
+        const emptyOption = document.createElement('option');
+        emptyOption.value = 'ALL';
+        emptyOption.textContent = 'Nenhum PDV disponível';
+        emptyOption.disabled = true;
+        DOM.filterPdv.appendChild(emptyOption);
+        return;
+    }
+    
+    // Adiciona uma opção para cada PDV real
+    for (const pdv of pdvs) {
+        const option = document.createElement('option');
+        option.value = pdv.code;
+        option.textContent = pdv.displayName;
+        DOM.filterPdv.appendChild(option);
+    }
+}
+
 // ============================================================================
 // REQUISIÇÕES À API
 // ============================================================================
@@ -108,7 +183,19 @@ async function fetchData(forceRefresh = false) {
         const response = await fetch(url, { method });
         
         if (!response.ok) {
-            throw new Error(`Erro na requisição: ${response.status}`);
+            // Tenta ler a resposta de erro estruturada
+            let errorData = null;
+            try {
+                errorData = await response.json();
+            } catch (e) {
+                // Resposta não é JSON válido
+            }
+            
+            const errorMessage = errorData && errorData.message 
+                ? errorData.message 
+                : `Erro na requisição: ${response.status}`;
+            
+            throw new Error(errorMessage);
         }
         
         const result = await response.json();
@@ -116,15 +203,22 @@ async function fetchData(forceRefresh = false) {
         if (result.success) {
             globalData = result.data;
             
-            // Popula o filtro de PDVs dinamicamente na primeira carga
-            if (!forceRefresh && DOM.filterPdv.options.length <= 1) {
-                populatePdvFilter();
+            // CORREÇÃO BUG 3: Popula o filtro de PDVs com lista real do backend
+            // (apenas na primeira carga ou quando forceRefresh)
+            if (result.availablePdvs && result.availablePdvs.length > 0) {
+                availablePdvs = result.availablePdvs;
+                populatePdvFilter(result.availablePdvs);
+            }
+            
+            // Renderiza avisos (warnings) se houver (modo parcial)
+            if (result.warnings) {
+                renderWarnings(result.warnings);
             }
             
             // Atualiza o timestamp no header
             DOM.lastUpdate.textContent = `Última atualização: ${globalData.timestamp}`;
             
-            // 🔥 Atualiza o badge de itens ignorados
+            // Atualiza o badge de itens ignorados
             updateIgnoredBadge(globalData.ignoredCount);
             
             // Aplica filtros iniciais (ou recalcula se for refresh)
@@ -134,28 +228,10 @@ async function fetchData(forceRefresh = false) {
         }
     } catch (error) {
         console.error('[app.js] Erro ao buscar dados:', error);
-        alert('Falha ao carregar os dados do dashboard. Verifique o console para mais detalhes.');
+        alert(`Falha ao carregar os dados do dashboard:\n\n${error.message}\n\nVerifique o console para mais detalhes.`);
     } finally {
         setLoading(false);
     }
-}
-
-/**
- * Popula o select de PDVs com base nos dados recebidos.
- * (Como o backend não envia a lista de PDVs diretamente, extraímos dos itens ou usamos uma lista padrão).
- * Para simplificar e manter a fidelidade, usamos a lista de PDVs do constants.js (mapeada no frontend).
- */
-function populatePdvFilter() {
-    // Lista padrão de PDVs (deveria vir do backend ou constants, mas como é frontend puro, hardcodamos os 17)
-    // Em uma arquitetura ideal, o backend enviaria { availablePdvs: [...] }
-    const pdvs = Array.from({ length: 17 }, (_, i) => `PDV ${String(i + 1).padStart(2, '0')}`);
-    
-    pdvs.forEach(pdv => {
-        const option = document.createElement('option');
-        option.value = pdv;
-        option.textContent = pdv;
-        DOM.filterPdv.appendChild(option);
-    });
 }
 
 // ============================================================================
@@ -165,6 +241,9 @@ function populatePdvFilter() {
 /**
  * Aplica os filtros selecionados (PDV e Marca) nos dados brutos (allItems).
  * Recalcula os KPIs e chama as funções de renderização de gráficos e tabelas.
+ * 
+ * CORREÇÃO BUG 3: O filtro de PDV agora usa o código real do PDV (ex: '4842')
+ * em vez de strings genéricas como 'PDV 01'.
  */
 function applyFilters() {
     if (!globalData || !globalData.allItems) return;
@@ -174,19 +253,33 @@ function applyFilters() {
     
     // Filtra os itens brutos
     currentFilteredItems = globalData.allItems.filter(item => {
-        const matchPdv = (selectedPdv === 'ALL') || (item.pdv === selectedPdv); // Nota: item.pdv não existe no allItems atual, pois o draft mapeia por EAN. 
-        // CORREÇÃO DE LÓGICA: O filtro de PDV no original do Streamlit provavelmente filtrava os itens que pertencem àquele PDV.
-        // Como o dataService.js atual não atribui PDV ao item final (apenas usa o draft para achar o custo), 
-        // o filtro de PDV no frontend atuará como um filtro conceitual ou precisará de ajuste no dataService.
-        // Para manter a estrutura do Streamlit original onde o filtro de PDV existia, vamos assumir que o filtro de PDV 
-        // no frontend apenas filtra se o item tiver a propriedade pdv, OU se for ALL. 
-        // (Se o dataService não mapeou PDV no item, o filtro de PDV não terá efeito prático nos itens, mas os KPIs globais continuarão).
-        // Vamos manter a lógica de filtro para quando o dataService for ajustado para incluir o PDV no item.
+        // Filtro por PDV: só aplica se o item tiver a propriedade 'pdv'
+        // (caso o dataService passe a expor esse campo no futuro)
+        const matchPdv = (selectedPdv === 'ALL') || 
+                        (item.pdv && item.pdv === selectedPdv);
         
+        // Filtro por Marca
         const matchBrand = (selectedBrand === 'ALL') || (item.marca === selectedBrand);
         
         return matchPdv && matchBrand;
     });
+    
+    // Aviso no console se o filtro de PDV está ativo mas nenhum item tem pdv
+    // (indica que o dataService precisa ser ajustado para expor o campo pdv)
+    if (selectedPdv !== 'ALL' && currentFilteredItems.length === 0) {
+        const hasAnyPdv = globalData.allItems.some(item => item.pdv);
+        if (!hasAnyPdv) {
+            console.warn(
+                '[app.js] ⚠️ Filtro de PDV selecionado, mas os itens não têm campo "pdv". ' +
+                'Para o filtro de PDV funcionar completamente, o dataService.js precisa ' +
+                'expor o PDV associado a cada item (via mapeamento do draft).'
+            );
+            // Fallback: mostra todos os itens se o filtro de PDV não puder ser aplicado
+            currentFilteredItems = globalData.allItems.filter(item => {
+                return (selectedBrand === 'ALL') || (item.marca === selectedBrand);
+            });
+        }
+    }
     
     // Recalcula os KPIs com base nos itens filtrados
     recalculateKPIs();
