@@ -6,13 +6,14 @@
  * - Implementa cache em memória com TTL de 1 hora para otimizar performance
  * - Tratamento robusto de erros com logs estruturados e mensagens acionáveis
  * - Suporte a "Modo Parcial": retorna avisos (warnings) se planilhas auxiliares falharem
+ * - CORREÇÃO BUG 3: Expõe lista real de PDVs (availablePdvs) para o frontend
  */
 
 const express = require('express');
 const router = express.Router();
 
 const dataService = require('../services/dataService');
-const { CACHE_TTL_MS } = require('../config/constants');
+const { CACHE_TTL_MS, PDV_MAPPING, ALL_PDVS } = require('../config/constants');
 const { 
     validateEnvironment, 
     getMissingEnvVars 
@@ -159,6 +160,65 @@ function generateWarnings(systemHealth) {
 }
 
 // ============================================================================
+// CORREÇÃO BUG 3: FUNÇÃO PARA CONSTRUIR LISTA DE PDVs REAIS
+// ============================================================================
+
+/**
+ * Constrói a lista de PDVs disponíveis a partir do PDV_MAPPING do constants.js.
+ * Transforma o mapeamento em uma estrutura amigável para o frontend:
+ * { code: '4842', name: 'Metrópole', displayName: '4842 - Metrópole' }
+ * 
+ * @returns {Array<Object>} Lista de PDVs com código, nome e displayName
+ */
+function buildAvailablePdvs() {
+    // Mapeamento de código -> nome amigável da loja
+    // Extraído do README original do projeto Python
+    const pdvNames = {
+        '4842': 'Metrópole',
+        '5152': 'Coração',
+        '6105': 'Assai Anchieta',
+        '6106': 'Direita',
+        '6110': 'Arouche',
+        '8001': 'Dom José',
+        '11576': 'Davó',
+        '12055': 'São Bento',
+        '12056': 'Marechal',
+        '12605': 'Coop',
+        '12645': 'Light',
+        '14120': 'VD SBC',
+        '14353': 'VD SP',
+        '20371': 'Luz',
+        '21502': 'Bem Barato',
+        '23000': 'Outlet',
+        '23379': 'Assai Piraporinha'
+    };
+    
+    // Usa ALL_PDVS do constants.js como fonte de verdade dos códigos
+    return ALL_PDVS.map(code => {
+        const name = pdvNames[code] || `PDV ${code}`;
+        return {
+            code: code,
+            name: name,
+            displayName: `${code} - ${name}`
+        };
+    });
+}
+
+// Cache da lista de PDVs (não muda em runtime)
+let cachedAvailablePdvs = null;
+
+/**
+ * Retorna a lista de PDVs disponíveis (com cache interno).
+ * @returns {Array<Object>} Lista de PDVs
+ */
+function getAvailablePdvs() {
+    if (!cachedAvailablePdvs) {
+        cachedAvailablePdvs = buildAvailablePdvs();
+    }
+    return cachedAvailablePdvs;
+}
+
+// ============================================================================
 // FUNÇÃO PRINCIPAL DE OBTENÇÃO DE DADOS (COM CACHE)
 // ============================================================================
 
@@ -192,6 +252,7 @@ async function getData() {
 /**
  * Rota GET /api/data
  * Retorna todos os dados processados para o frontend.
+ * CORREÇÃO BUG 3: Inclui availablePdvs com lista real de PDVs.
  */
 router.get('/data', async (req, res) => {
     const routeLabel = 'GET /api/data';
@@ -201,10 +262,14 @@ router.get('/data', async (req, res) => {
         // Gera avisos se o dashboard estiver em modo parcial
         const warnings = generateWarnings(data.systemHealth);
         
+        // CORREÇÃO BUG 3: Lista real de PDVs para o frontend
+        const availablePdvs = getAvailablePdvs();
+        
         res.json({
             success: true,
             data,
-            warnings // Array vazio se tudo estiver OK
+            warnings,
+            availablePdvs // ✅ NOVO: lista real de PDVs
         });
     } catch (error) {
         const classified = classifyError(error);
@@ -228,6 +293,7 @@ router.get('/data', async (req, res) => {
  * Rota POST /api/refresh
  * Força a atualização dos dados, invalidando o cache atual.
  * Equivale ao botão "Forçar Atualização" do Streamlit.
+ * CORREÇÃO BUG 3: Inclui availablePdvs com lista real de PDVs.
  */
 router.post('/refresh', async (req, res) => {
     const routeLabel = 'POST /api/refresh';
@@ -243,12 +309,16 @@ router.post('/refresh', async (req, res) => {
         
         // Gera avisos se o dashboard estiver em modo parcial
         const warnings = generateWarnings(data.systemHealth);
+        
+        // CORREÇÃO BUG 3: Lista real de PDVs para o frontend
+        const availablePdvs = getAvailablePdvs();
 
         res.json({
             success: true,
             message: 'Dados atualizados com sucesso.',
             data,
-            warnings
+            warnings,
+            availablePdvs // ✅ NOVO: lista real de PDVs
         });
     } catch (error) {
         const classified = classifyError(error);
@@ -260,6 +330,38 @@ router.post('/refresh', async (req, res) => {
             errorCategory: classified.category,
             missingEnvVars: classified.missingEnvVars,
             technicalMessage: !classified.isUserFriendly && error ? error.message : undefined
+        });
+    }
+});
+
+// ============================================================================
+// CORREÇÃO BUG 3: NOVA ROTA GET /pdvs (endpoint dedicado)
+// ============================================================================
+
+/**
+ * Rota GET /api/pdvs
+ * Retorna a lista de PDVs disponíveis para popular o filtro do frontend.
+ * Endpoint dedicado para casos onde o frontend precisa apenas da lista de PDVs
+ * sem carregar todos os dados do dashboard.
+ */
+router.get('/pdvs', (req, res) => {
+    try {
+        const availablePdvs = getAvailablePdvs();
+        res.json({
+            success: true,
+            data: availablePdvs,
+            total: availablePdvs.length
+        });
+    } catch (error) {
+        logError({ 
+            route: 'GET /api/pdvs', 
+            error, 
+            category: 'PROCESSING_ERROR' 
+        });
+        res.status(500).json({
+            success: false,
+            message: 'Falha ao carregar lista de PDVs.',
+            errorCategory: 'PROCESSING_ERROR'
         });
     }
 });
